@@ -1,44 +1,48 @@
-const HOSTNAME_WHITELIST = [
-  self.location.hostname,
-  "fonts.gstatic.com",
-  "fonts.googleapis.com",
-  "cdn.jsdelivr.net",
-];
+// This is the "Offline page" service worker
 
-const getFixedUrl = (req) => {
-  var now = Date.now();
-  var url = new URL(req.url);
-  url.protocol = self.location.protocol;
-  if (url.hostname === self.location.hostname) {
-    url.search += (url.search ? "&" : "?") + "cache-bust=" + now;
+importScripts(
+  "https://storage.googleapis.com/workbox-cdn/releases/5.1.2/workbox-sw.js",
+);
+
+const CACHE = "pwabuilder-page";
+
+const offlineFallbackPage = "offline.html";
+
+self.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "SKIP_WAITING") {
+    self.skipWaiting();
   }
-  return url.href;
-};
-
-self.addEventListener("activate", (event) => {
-  event.waitUntil(self.clients.claim());
 });
 
+self.addEventListener("install", async (event) => {
+  event.waitUntil(
+    caches.open(CACHE).then((cache) => cache.add(offlineFallbackPage)),
+  );
+});
+
+if (workbox.navigationPreload.isSupported()) {
+  workbox.navigationPreload.enable();
+}
+
 self.addEventListener("fetch", (event) => {
-  if (HOSTNAME_WHITELIST.indexOf(new URL(event.request.url).hostname) > -1) {
-    const cached = caches.match(event.request);
-    const fixedUrl = getFixedUrl(event.request);
-    const fetched = fetch(fixedUrl, { cache: "no-store" });
-    const fetchedCopy = fetched.then((resp) => resp.clone());
-
+  if (event.request.mode === "navigate") {
     event.respondWith(
-      Promise.race([fetched.catch((_) => cached), cached])
-        .then((resp) => resp || fetched)
-        .catch((_) => {}),
-    );
+      (async () => {
+        try {
+          const preloadResp = await event.preloadResponse;
 
-    event.waitUntil(
-      Promise.all([fetchedCopy, caches.open("pwa-cache")])
-        .then(
-          ([response, cache]) =>
-            response.ok && cache.put(event.request, response),
-        )
-        .catch((_) => {}),
+          if (preloadResp) {
+            return preloadResp;
+          }
+
+          const networkResp = await fetch(event.request);
+          return networkResp;
+        } catch (error) {
+          const cache = await caches.open(CACHE);
+          const cachedResp = await cache.match(offlineFallbackPage);
+          return cachedResp;
+        }
+      })(),
     );
   }
 });
